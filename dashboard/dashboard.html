@@ -1,0 +1,424 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TFWR Dashboard</title>
+<style>
+	:root {
+		--bg: #0d1117;
+		--panel: #161b22;
+		--panel2: #1c2330;
+		--border: #2b3340;
+		--text: #d4dae3;
+		--muted: #7d8590;
+		--accent: #3fb950;
+		--warn: #d29922;
+		--err: #f85149;
+		--info: #58a6ff;
+	}
+	* { box-sizing: border-box; margin: 0; padding: 0; }
+	body {
+		background: var(--bg);
+		color: var(--text);
+		font: 14px/1.4 "SF Mono", ui-monospace, Menlo, Consolas, monospace;
+		padding: 16px;
+	}
+	header {
+		display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap;
+		margin-bottom: 14px;
+	}
+	h1 { font-size: 20px; font-weight: 600; }
+	#status { font-size: 12px; color: var(--muted); }
+	.dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%;
+		background: var(--muted); margin-right: 5px; }
+	.dot.on { background: var(--accent); box-shadow: 0 0 6px var(--accent); }
+	.badge { padding: 2px 8px; border-radius: 10px; font-size: 12px;
+		background: var(--panel2); border: 1px solid var(--border); }
+	.badge.err { color: var(--err); border-color: var(--err); }
+	.badge.warn { color: var(--warn); border-color: var(--warn); }
+	.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+		gap: 10px; margin-bottom: 14px; }
+	.card { background: var(--panel); border: 1px solid var(--border);
+		border-radius: 8px; padding: 10px; }
+	.card .name { color: var(--muted); font-size: 12px; text-transform: uppercase;
+		letter-spacing: .05em; }
+	.card .value { font-size: 22px; font-weight: 600; margin: 4px 0 2px; }
+	.card .rate { font-size: 12px; color: var(--muted); }
+	.card .rate.up { color: var(--accent); }
+	.card .rate.down { color: var(--err); }
+	.card canvas { width: 100%; height: 34px; display: block; margin-top: 6px; }
+	.row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+	@media (max-width: 900px) { .row { grid-template-columns: 1fr; } }
+	.panel { background: var(--panel); border: 1px solid var(--border);
+		border-radius: 8px; overflow: hidden; }
+	.panel .head { display: flex; align-items: center; gap: 10px; padding: 8px 10px;
+		border-bottom: 1px solid var(--border); background: var(--panel2); }
+	.panel .head .title { font-weight: 600; }
+	.panel .head select, .panel .head label { font: inherit; color: var(--text);
+		background: var(--bg); border: 1px solid var(--border); border-radius: 5px;
+		padding: 2px 6px; }
+	#chartWrap { padding: 10px; }
+	#chart { width: 100%; height: 220px; display: block; }
+	.scroll { overflow-y: auto; max-height: 320px; padding: 6px 10px; }
+	.logline { padding: 1px 0; white-space: pre-wrap; word-break: break-word; }
+	.logline.out { color: var(--text); }
+	.logline.warning { color: var(--warn); }
+	.logline.error { color: var(--err); }
+	.evt { padding: 3px 0; border-bottom: 1px dashed var(--border); }
+	.evt .n { color: var(--info); font-weight: 600; }
+	.evt .f { color: var(--muted); font-size: 12px; }
+	table { width: 100%; border-collapse: collapse; font-size: 13px; }
+	th, td { text-align: left; padding: 2px 8px; border-bottom: 1px solid var(--border); }
+	th { color: var(--muted); font-weight: 500; }
+	.toggle { cursor: pointer; user-select: none; }
+	.empty { color: var(--muted); padding: 10px; }
+</style>
+</head>
+<body>
+<header>
+	<h1>TFWR&nbsp;Dashboard</h1>
+	<span id="status"><span class="dot" id="dot"></span><span id="statustext">connecting…</span></span>
+	<span class="badge" id="tick">tick –</span>
+	<span class="badge" id="errors">errors 0</span>
+	<span class="badge" id="saveinfo">save –</span>
+</header>
+
+<section class="grid" id="cards"></section>
+
+<div class="row">
+	<div class="panel">
+		<div class="head">
+			<span class="title">History</span>
+			<select id="resSelect"></select>
+			<label><input type="checkbox" id="rateMode"> rate</label>
+		</div>
+		<div id="chartWrap"><canvas id="chart"></canvas></div>
+	</div>
+	<div class="panel">
+		<div class="head">
+			<span class="title">Events</span>
+			<span id="evtCount" class="badge">0</span>
+		</div>
+		<div class="scroll" id="events"><div class="empty">no events yet</div></div>
+	</div>
+</div>
+
+<div class="row" style="margin-top:10px">
+	<div class="panel">
+		<div class="head">
+			<span class="title toggle" id="logToggle">Output log</span>
+			<label><input type="checkbox" id="logAuto" checked> autoscroll</label>
+		</div>
+		<div class="scroll" id="log"><div class="empty">waiting for output…</div></div>
+	</div>
+	<div class="panel">
+		<div class="head"><span class="title">Save state</span></div>
+		<div class="scroll" id="save"><div class="empty">no save data</div></div>
+	</div>
+</div>
+
+<script>
+"use strict";
+
+const RES = ["hay","wood","carrot","pumpkin","fertilizer","water","weird","gold","power","cactus"];
+const RES_LABEL = {
+	hay: "Hay", wood: "Wood", carrot: "Carrot", pumpkin: "Pumpkin",
+	fertilizer: "Fertilizer", water: "Water", weird: "Weird Substance",
+	gold: "Gold", power: "Power", cactus: "Cactus"
+};
+const MAX_POINTS = 3600;
+
+const state = {
+	series: {},      // res -> [{t, v}]
+	values: {},      // res -> last value
+	rates: {},       // res -> v/s
+	logs: [],
+	events: [],
+	errors: 0,
+	warnings: 0,
+	tick: null,
+	save: null,
+};
+
+let selRes = RES[0];
+let chart = null;
+
+function now() { return Date.now() / 1000; }
+
+function pushRes(res, v, t) {
+	if (!(res in state.series)) state.series[res] = [];
+	const arr = state.series[res];
+	arr.push({ t, v });
+	if (arr.length > MAX_POINTS) arr.shift();
+	const prev = state.values[res];
+	state.values[res] = v;
+	state.rates[res] = (prev === undefined) ? 0 : (v - prev) / Math.max(t - (arr[arr.length-2].t), 0.001);
+}
+
+function fmt(n) {
+	if (n === undefined || n === null) return "–";
+	if (typeof n !== "number") return String(n);
+	if (Math.abs(n) >= 1e9) return (n/1e9).toFixed(2) + "B";
+	if (Math.abs(n) >= 1e6) return (n/1e6).toFixed(2) + "M";
+	if (Math.abs(n) >= 1e4) return (n/1e3).toFixed(1) + "k";
+	return n.toLocaleString("en-US");
+}
+
+function buildCards() {
+	const grid = document.getElementById("cards");
+	grid.innerHTML = "";
+	const sel = document.getElementById("resSelect");
+	for (const res of RES) {
+		const card = document.createElement("div");
+		card.className = "card";
+		card.id = "card-" + res;
+		card.innerHTML =
+			'<div class="name">' + RES_LABEL[res] + '</div>' +
+			'<div class="value" id="val-' + res + '">–</div>' +
+			'<div class="rate" id="rate-' + res + '"></div>' +
+			'<canvas id="spark-' + res + '"></canvas>';
+		card.addEventListener("click", () => { selRes = res; sel.value = res; });
+		grid.appendChild(card);
+		const opt = document.createElement("option");
+		opt.value = res; opt.textContent = RES_LABEL[res];
+		sel.appendChild(opt);
+	}
+	sel.value = selRes;
+}
+
+function drawSpark(res) {
+	const cv = document.getElementById("spark-" + res);
+	const arr = state.series[res];
+	if (!cv || !arr || arr.length < 2) return;
+	const dpr = window.devicePixelRatio || 1;
+	const w = cv.clientWidth, h = cv.clientHeight;
+	cv.width = w * dpr; cv.height = h * dpr;
+	const ctx = cv.getContext("2d");
+	ctx.scale(dpr, dpr);
+	let min = Infinity, max = -Infinity;
+	for (const p of arr) { if (p.v < min) min = p.v; if (p.v > max) max = p.v; }
+	if (max === min) { max = min + 1; }
+	ctx.beginPath();
+	for (let i = 0; i < arr.length; i++) {
+		const x = (i / (arr.length - 1)) * w;
+		const y = h - ((arr[i].v - min) / (max - min)) * h;
+		if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+	}
+	ctx.strokeStyle = "#3fb950"; ctx.lineWidth = 1.5;
+	ctx.stroke();
+}
+
+function drawChart() {
+	const cv = document.getElementById("chart");
+	const arr = state.series[selRes];
+	if (!cv || !arr || arr.length < 2) return;
+	const dpr = window.devicePixelRatio || 1;
+	const w = cv.clientWidth, h = cv.clientHeight;
+	cv.width = w * dpr; cv.height = h * dpr;
+	const ctx = cv.getContext("2d");
+	ctx.scale(dpr, dpr);
+	ctx.clearRect(0, 0, w, h);
+	const rateMode = document.getElementById("rateMode").checked;
+	const ys = rateMode ? arr.map(p => p.v / Math.max(p.t - arr[0].t, 1)) : arr.map(p => p.v);
+	let min = Infinity, max = -Infinity;
+	for (const y of ys) { if (y < min) min = y; if (y > max) max = y; }
+	if (max === min) { max = min + 1; }
+	const t0 = arr[0].t, t1 = arr[arr.length-1].t;
+	// grid lines
+	ctx.strokeStyle = "#2b3340"; ctx.lineWidth = 1;
+	ctx.beginPath();
+	for (let i = 1; i < 5; i++) {
+		const y = (i / 5) * h;
+		ctx.moveTo(0, y); ctx.lineTo(w, y);
+	}
+	ctx.stroke();
+	// area + line
+	ctx.beginPath();
+	for (let i = 0; i < arr.length; i++) {
+		const x = ((arr[i].t - t0) / Math.max(t1 - t0, 0.001)) * w;
+		const y = h - ((ys[i] - min) / (max - min)) * h;
+		if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+	}
+	ctx.strokeStyle = "#58a6ff"; ctx.lineWidth = 2;
+	ctx.stroke();
+	ctx.lineTo(w, h); ctx.lineTo(0, h); ctx.closePath();
+	ctx.fillStyle = "rgba(88,166,255,0.12)"; ctx.fill();
+	// labels
+	ctx.fillStyle = "#7d8590"; ctx.font = "12px monospace";
+	ctx.fillText(RES_LABEL[selRes] + (rateMode ? " /s" : ""), 8, 14);
+	ctx.fillText("min " + fmt(min), 8, h - 8);
+	ctx.fillText("max " + fmt(max), w - ctx.measureText("max " + fmt(max)).width - 8, h - 8);
+}
+
+function renderCards() {
+	for (const res of RES) {
+		const v = state.values[res];
+		const el = document.getElementById("val-" + res);
+		if (el) el.textContent = fmt(v);
+		const r = state.rates[res] || 0;
+		const re = document.getElementById("rate-" + res);
+		if (re) {
+			re.textContent = (r > 0 ? "+" : "") + fmt(r) + "/s";
+			re.className = "rate " + (r > 0 ? "up" : (r < 0 ? "down" : ""));
+		}
+		drawSpark(res);
+	}
+}
+
+function renderLog() {
+	const box = document.getElementById("log");
+	if (state.logs.length === 0) {
+		box.innerHTML = '<div class="empty">waiting for output…</div>';
+		return;
+	}
+	const start = Math.max(0, state.logs.length - 400);
+	const frag = document.createDocumentFragment();
+	for (let i = start; i < state.logs.length; i++) {
+		const d = state.logs[i];
+		const div = document.createElement("div");
+		div.className = "logline " + d.kind;
+		div.textContent = d.text;
+		frag.appendChild(div);
+	}
+	box.innerHTML = "";
+	box.appendChild(frag);
+	if (document.getElementById("logAuto").checked) box.scrollTop = box.scrollHeight;
+}
+
+function renderEvents() {
+	const box = document.getElementById("events");
+	document.getElementById("evtCount").textContent = state.events.length;
+	if (state.events.length === 0) {
+		box.innerHTML = '<div class="empty">no events yet</div>';
+		return;
+	}
+	const start = Math.max(0, state.events.length - 200);
+	const frag = document.createDocumentFragment();
+	for (let i = start; i < state.events.length; i++) {
+		const e = state.events[i];
+		const div = document.createElement("div");
+		div.className = "evt";
+		const fields = Object.entries(e.fields).map(([k, v]) => k + "=" + v).join(" ");
+		div.innerHTML = '<span class="n">' + e.name + '</span> <span class="f">' + fields + '</span>';
+		frag.appendChild(div);
+	}
+	box.innerHTML = "";
+	box.appendChild(frag);
+}
+
+function renderSave() {
+	const box = document.getElementById("save");
+	const s = state.save;
+	if (!s) {
+		box.innerHTML = '<div class="empty">no save data</div>';
+		document.getElementById("saveinfo").textContent = "save –";
+		return;
+	}
+	const items = Object.entries(s.items || {})
+		.sort((a, b) => String(a[0]).localeCompare(String(b[0])))
+		.map(([k, v]) => "<tr><td>" + k + "</td><td>" + fmt(v) + "</td></tr>").join("");
+	box.innerHTML =
+		'<table><tr><th>unlocks</th><td>' + s.unlocks.length + '</td></tr>' +
+		'<tr><th>version</th><td>' + s.version + '</td></tr></table>' +
+		'<table><tr><th>item</th><th>count</th></tr>' + items + "</table>";
+	document.getElementById("saveinfo").textContent = "unlocks " + s.unlocks.length;
+}
+
+function renderStatus() {
+	const dot = document.getElementById("dot");
+	dot.className = "dot on";
+	document.getElementById("statustext").textContent = "live";
+	document.getElementById("tick").textContent = "tick " + (state.tick === null ? "–" : state.tick);
+	const er = document.getElementById("errors");
+	er.textContent = "errors " + state.errors;
+	er.className = "badge" + (state.errors > 0 ? " err" : "");
+}
+
+let renderTimer = null;
+function scheduleRender() {
+	if (renderTimer) return;
+	renderTimer = setTimeout(() => {
+		renderTimer = null;
+		renderCards();
+		drawChart();
+		renderLog();
+		renderEvents();
+		renderSave();
+		renderStatus();
+	}, 120);
+}
+
+function applySnap(snap) {
+	const t = now();
+	for (const res of RES) {
+		if (snap.resources[res] !== undefined) pushRes(res, snap.resources[res], t);
+	}
+	state.logs = snap.lines || [];
+	state.events = snap.events || [];
+	state.errors = snap.errors || 0;
+	state.warnings = snap.warnings || 0;
+	state.tick = snap.tick;
+	scheduleRender();
+}
+
+function boot() {
+	buildCards();
+	document.getElementById("resSelect").addEventListener("change", e => {
+		selRes = e.target.value;
+		drawChart();
+	});
+	document.getElementById("rateMode").addEventListener("change", drawChart);
+	fetch("/state").then(r => r.json()).then(data => {
+		if (data.snap) {
+			const snap = data.snap;
+			const t = now();
+			for (const res of RES) {
+				if (snap.resources[res] !== undefined) pushRes(res, snap.resources[res], t);
+			}
+			if (snap.history) {
+				for (const res of RES) {
+					const h = snap.history[res];
+					if (h && h.length > 1) {
+						state.series[res] = h.map(p => ({ t: p[0], v: p[1] })).slice(-MAX_POINTS);
+					}
+				}
+			}
+			state.logs = snap.lines || [];
+			state.events = snap.events || [];
+			state.errors = snap.errors || 0;
+			state.warnings = snap.warnings || 0;
+			state.tick = snap.tick;
+		}
+		if (data.save) state.save = data.save;
+		scheduleRender();
+	}).catch(() => {
+		document.getElementById("statustext").textContent = "state fetch failed";
+	});
+
+	const es = new EventSource("/events");
+	es.onopen = () => {
+		document.getElementById("dot").className = "dot on";
+		document.getElementById("statustext").textContent = "live";
+	};
+	es.onerror = () => {
+		document.getElementById("dot").className = "dot";
+		document.getElementById("statustext").textContent = "reconnecting…";
+	};
+	es.onmessage = (ev) => {
+		let msg;
+		try { msg = JSON.parse(ev.data); } catch { return; }
+		if (msg.snap) applySnap(msg.snap);
+		if (msg.save) { state.save = msg.save; scheduleRender(); }
+	};
+
+	document.getElementById("logToggle").addEventListener("click", () => {
+		document.getElementById("log").style.display =
+			document.getElementById("log").style.display === "none" ? "" : "none";
+	});
+}
+
+boot();
+</script>
+</body>
+</html>
